@@ -154,7 +154,7 @@ class GameWebSocketClient {
         }
     }
 
-    // Phân tích thống kê
+    // Phân tích thống kê (giữ lại cho các phương thức cũ)
     analyzeHistory(history, recentCount = 10) {
         if (history.length === 0) return null;
         const total = history.length;
@@ -180,7 +180,7 @@ class GameWebSocketClient {
         };
     }
 
-    // Dự đoán
+    // Dự đoán đơn giản (giữ lại)
     predict(method = 'simple', type = 'tx') {
         const history = type === 'tx' ? this.historyTx : this.historyMd5;
         if (history.length === 0) {
@@ -251,6 +251,130 @@ class GameWebSocketClient {
 
     predictMd5(method = 'simple') {
         return this.predict(method, 'md5');
+    }
+
+    // ==================== DỰ ĐOÁN NÂNG CAO ====================
+    // Phân tích 100 phiên gần nhất, trả về xác suất tài/xỉu
+    analyze100Sessions(type = 'tx') {
+        const history = type === 'tx' ? this.historyTx : this.historyMd5;
+        if (history.length === 0) return null;
+
+        // Lấy tối đa 100 phiên gần nhất
+        const recent = history.slice(0, Math.min(100, history.length));
+        const total = recent.length;
+        let tai = 0, xiu = 0;
+        const results = []; // lưu kết quả để phân tích chuỗi
+
+        recent.forEach(s => {
+            const tong = s.d1 + s.d2 + s.d3;
+            const isTai = tong >= 11;
+            if (isTai) tai++; else xiu++;
+            results.push(isTai ? 'T' : 'X');
+        });
+
+        // Tỷ lệ tổng thể
+        const overallTaiProb = tai / total;
+        const overallXiuProb = xiu / total;
+
+        // Tỷ lệ 20 phiên gần nhất (xu hướng ngắn hạn)
+        const shortTerm = results.slice(0, Math.min(20, results.length));
+        const shortTai = shortTerm.filter(r => r === 'T').length;
+        const shortXiu = shortTerm.length - shortTai;
+        const shortTaiProb = shortTerm.length > 0 ? shortTai / shortTerm.length : 0.5;
+        const shortXiuProb = shortTerm.length > 0 ? shortXiu / shortTerm.length : 0.5;
+
+        // Phân tích Markov bậc 1: xác suất chuyển tiếp
+        let transTT = 0, transTX = 0, transXT = 0, transXX = 0;
+        for (let i = 0; i < results.length - 1; i++) {
+            if (results[i] === 'T' && results[i+1] === 'T') transTT++;
+            else if (results[i] === 'T' && results[i+1] === 'X') transTX++;
+            else if (results[i] === 'X' && results[i+1] === 'T') transXT++;
+            else if (results[i] === 'X' && results[i+1] === 'X') transXX++;
+        }
+
+        const lastResult = results[0]; // kết quả phiên gần nhất
+        let markovTaiProb = 0.5, markovXiuProb = 0.5;
+
+        if (lastResult === 'T') {
+            const totalT = transTT + transTX;
+            markovTaiProb = totalT > 0 ? transTT / totalT : 0.5;
+            markovXiuProb = totalT > 0 ? transTX / totalT : 0.5;
+        } else if (lastResult === 'X') {
+            const totalX = transXT + transXX;
+            markovTaiProb = totalX > 0 ? transXT / totalX : 0.5;
+            markovXiuProb = totalX > 0 ? transXX / totalX : 0.5;
+        }
+
+        // Phát hiện streak (5 phiên gần nhất)
+        const streak = results.slice(0, Math.min(5, results.length));
+        const streakTai = streak.filter(r => r === 'T').length;
+        const streakXiu = streak.length - streakTai;
+        let streakBias = 0;
+        if (streakTai === 5) streakBias = -0.1; // 5 tài liên tiếp, khả năng xỉu tăng nhẹ
+        else if (streakXiu === 5) streakBias = 0.1; // 5 xỉu liên tiếp, khả năng tài tăng nhẹ
+        else if (streakTai === 4) streakBias = -0.05;
+        else if (streakXiu === 4) streakBias = 0.05;
+
+        // Kết hợp các yếu tố với trọng số
+        const wOverall = 0.2;
+        const wShort = 0.3;
+        const wMarkov = 0.5;
+
+        let combinedTaiProb = overallTaiProb * wOverall + shortTaiProb * wShort + markovTaiProb * wMarkov + streakBias;
+        let combinedXiuProb = overallXiuProb * wOverall + shortXiuProb * wShort + markovXiuProb * wMarkov - streakBias;
+
+        // Chuẩn hóa về tổng 1
+        const totalProb = combinedTaiProb + combinedXiuProb;
+        combinedTaiProb = totalProb > 0 ? combinedTaiProb / totalProb : 0.5;
+        combinedXiuProb = 1 - combinedTaiProb;
+
+        return {
+            taiProb: combinedTaiProb,
+            xiuProb: combinedXiuProb,
+            totalSessions: total
+        };
+    }
+
+    // Dự đoán phiên tiếp theo (trả về format yêu cầu)
+    predictNext(type = 'tx') {
+        const history = type === 'tx' ? this.historyTx : this.historyMd5;
+        if (history.length === 0) {
+            return { error: 'Không có dữ liệu lịch sử để dự đoán' };
+        }
+
+        // Lấy phiên gần nhất
+        const latest = history[0];
+        if (!latest) return { error: 'Không tìm thấy phiên gần nhất' };
+
+        const tong = latest.d1 + latest.d2 + latest.d3;
+        const ketQua = tong >= 11 ? 'Tài' : 'Xỉu';
+        const phienHienTai = latest.sid + 1; // Giả sử sid tăng dần
+
+        // Phân tích nâng cao
+        const analysis = this.analyze100Sessions(type);
+        if (!analysis) return { error: 'Không thể phân tích dữ liệu' };
+
+        // Dự đoán
+        const duDoan = analysis.taiProb > analysis.xiuProb ? 'Tài' : 'Xỉu';
+        const confidence = analysis.taiProb > analysis.xiuProb ? analysis.taiProb : analysis.xiuProb;
+
+        return {
+            phien: latest.sid,
+            xuc_xac_1: latest.d1,
+            xuc_xac_2: latest.d2,
+            xuc_xac_3: latest.d3,
+            tong: tong,
+            ket_qua: ketQua,
+            phien_hien_tai: phienHienTai,
+            du_doan: duDoan,
+            // Thêm confidence nếu muốn (không bắt buộc)
+            confidence: Math.round(confidence * 100) / 100,
+            phan_tich: {
+                tong_so_phien: analysis.totalSessions,
+                xac_suat_tai: Math.round(analysis.taiProb * 100) / 100,
+                xac_suat_xiu: Math.round(analysis.xiuProb * 100) / 100
+            }
+        };
     }
 
     handleMessage(data) {
@@ -403,7 +527,7 @@ const client = new GameWebSocketClient(
 );
 client.connect();
 
-// Routes API
+// Routes API cũ
 app.get('/api/tx', (req, res) => {
     const data = client.getLatestTxSession();
     if (data.error) return res.status(404).json(data);
@@ -452,7 +576,7 @@ app.get('/api/refresh', (req, res) => {
     }
 });
 
-// API DỰ ĐOÁN
+// API DỰ ĐOÁN CŨ (giữ lại cho tương thích)
 app.get('/api/predict/tx', (req, res) => {
     const method = req.query.method || 'simple';
     const result = client.predictTx(method);
@@ -467,7 +591,7 @@ app.get('/api/predict/md5', (req, res) => {
     res.json(result);
 });
 
-// API LỊCH SỬ
+// API LỊCH SỬ CŨ
 app.get('/api/history/tx', (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const history = client.historyTx.slice(0, limit);
@@ -500,12 +624,35 @@ app.get('/api/history/md5', (req, res) => {
     });
 });
 
+// ========== API DỰ ĐOÁN NÂNG CAO MỚI ==========
+// Dự đoán nâng cao cho bàn Tài Xỉu thường (format theo yêu cầu)
+app.get('/api/predict/next', (req, res) => {
+    const result = client.predictNext('tx');
+    if (result.error) return res.status(404).json(result);
+    res.json(result);
+});
+
+// Dự đoán nâng cao cho bàn MD5
+app.get('/api/predict/next/md5', (req, res) => {
+    const result = client.predictNext('md5');
+    if (result.error) return res.status(404).json(result);
+    res.json(result);
+});
+
+// Route hỗ trợ tham số type (tx hoặc md5)
+app.get('/api/predict/next/:type', (req, res) => {
+    const type = req.params.type === 'md5' ? 'md5' : 'tx';
+    const result = client.predictNext(type);
+    if (result.error) return res.status(404).json(result);
+    res.json(result);
+});
+
 app.get('/', (req, res) => {
     res.send(`
         <html>
-            <head><title>API Tài Xỉu</title></head>
+            <head><title>API Tài Xỉu + Dự đoán nâng cao</title></head>
             <body>
-                <h1>🚀 API Tài Xỉu + Dự đoán</h1>
+                <h1>🚀 API Tài Xỉu + Dự đoán nâng cao</h1>
                 <p>Các endpoint:</p>
                 <ul>
                     <li><code>/api/tx</code> – Phiên tài xỉu thường gần nhất</li>
@@ -513,12 +660,14 @@ app.get('/', (req, res) => {
                     <li><code>/api/all</code> – Cả hai bàn</li>
                     <li><code>/api/status</code> – Trạng thái kết nối</li>
                     <li><code>/api/refresh</code> – Refresh dữ liệu</li>
-                    <li><code>/api/predict/tx?method=simple</code> – Dự đoán bàn thường</li>
-                    <li><code>/api/predict/md5?method=trend</code> – Dự đoán bàn MD5</li>
-                    <li><code>/api/history/tx?limit=10</code> – Lịch sử bàn thường</li>
-                    <li><code>/api/history/md5?limit=10</code> – Lịch sử bàn MD5</li>
+                    <li><code>/api/history/tx?limit=20</code> – Lịch sử bàn thường</li>
+                    <li><code>/api/history/md5?limit=20</code> – Lịch sử bàn MD5</li>
+                    <li><code>/api/predict/tx?method=simple</code> – Dự đoán cơ bản (simple/trend/combined)</li>
+                    <li><code>/api/predict/md5?method=simple</code> – Dự đoán cơ bản cho MD5</li>
+                    <li><code>/api/predict/next</code> – <b>Dự đoán nâng cao bàn TX (format yêu cầu)</b></li>
+                    <li><code>/api/predict/next/md5</code> – Dự đoán nâng cao bàn MD5</li>
                 </ul>
-                <p>Phương thức dự đoán: <code>simple</code>, <code>trend</code>, <code>combined</code></p>
+                <p>Ví dụ: <a href="/api/predict/next">/api/predict/next</a></p>
             </body>
         </html>
     `);
