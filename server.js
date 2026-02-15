@@ -367,7 +367,7 @@ class GameWebSocketClient {
             ket_qua: ketQua,
             phien_hien_tai: phienHienTai,
             du_doan: duDoan,
-            // Thêm confidence nếu muốn (không bắt buộc)
+            ti_le: Math.round(confidence * 100) + '%', // Tỉ lệ phần trăm
             confidence: Math.round(confidence * 100) / 100,
             phan_tich: {
                 tong_so_phien: analysis.totalSessions,
@@ -664,7 +664,7 @@ app.get('/', (req, res) => {
                     <li><code>/api/history/md5?limit=20</code> – Lịch sử bàn MD5</li>
                     <li><code>/api/predict/tx?method=simple</code> – Dự đoán cơ bản (simple/trend/combined)</li>
                     <li><code>/api/predict/md5?method=simple</code> – Dự đoán cơ bản cho MD5</li>
-                    <li><code>/api/predict/next</code> – <b>Dự đoán nâng cao bàn TX (format yêu cầu)</b></li>
+                    <li><code>/api/predict/next</code> – <b>Dự đoán nâng cao bàn TX (có tỉ lệ %) </b></li>
                     <li><code>/api/predict/next/md5</code> – Dự đoán nâng cao bàn MD5</li>
                 </ul>
                 <p>Ví dụ: <a href="/api/predict/next">/api/predict/next</a></p>
