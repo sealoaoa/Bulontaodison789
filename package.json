@@ -1,7 +1,7 @@
 {
   "name": "taixiu-api",
-  "version": "1.0.0",
-  "description": "WebSocket client + Express API cho game tài xỉu, có dự đoán",
+  "version": "1.1.0",
+  "description": "SON789",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
